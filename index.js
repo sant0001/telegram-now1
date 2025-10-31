@@ -13,8 +13,8 @@ app.use(express.json());
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const NOW_API_KEY = process.env.NOW_API_KEY;
 const NOW_WEBHOOK_SECRET = process.env.NOW_WEBHOOK_SECRET || '';
-const CHANNEL_INVITE_LINK = process.env.CHANNEL_INVITE_LINK || 'https://t.me/joinchat/SEU_INVITE';
-const BASE_URL = process.env.BASE_URL || 'https://seu-app.onrender.com';
+const CHANNEL_INVITE_LINK = process.env.CHANNEL_INVITE_LINK || 'https://t.me/joinchat/+13tPjXsFECZiZGRh';
+const BASE_URL = process.env.BASE_URL || 'https://telegram-now1-1.onrender.com';
 
 if (!BOT_TOKEN || !NOW_API_KEY) {
   console.error("Set BOT_TOKEN and NOW_API_KEY in environment variables");
