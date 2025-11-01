@@ -1,4 +1,4 @@
-// index.js — Telegram bot (MundiPay opcional)
+// index.js — Telegram bot com botões + fluxo de packs
 const express = require("express");
 const axios = require("axios");
 const crypto = require("crypto");
@@ -7,97 +7,128 @@ const app = express();
 app.use(express.json({ limit: "200kb" }));
 
 /*
-  VARIÁVEIS DE AMBIENTE (defina no Render):
-  BOT_TOKEN, BASE_URL, (opcional depois: MUNDIPAY_API_KEY, MUNDIPAY_WEBHOOK_SECRET, CHANNEL_INVITE_LINK)
+  VARIÁVEIS DE AMBIENTE NO RENDER:
+  BOT_TOKEN, BASE_URL, (opcional depois: MUNDIPAY_API_KEY, CHANNEL_INVITE_LINK, MUNDIPAY_WEBHOOK_SECRET)
 */
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const BASE_URL = process.env.BASE_URL;
-
-// Mundipay (opcional, você vai colocar depois)
 const MUNDIPAY_API_KEY = process.env.MUNDIPAY_API_KEY || "";
 const MUNDIPAY_WEBHOOK_SECRET = process.env.MUNDIPAY_WEBHOOK_SECRET || "";
 const CHANNEL_INVITE_LINK = process.env.CHANNEL_INVITE_LINK || "https://t.me/joinchat/SEU_CANAL";
 
-// Verifica apenas requisitos mínimos
 if (!BOT_TOKEN || !BASE_URL) {
   console.error("❌ ERRO: configure BOT_TOKEN e BASE_URL no Render.");
   process.exit(1);
 }
 
-// Se não existir API Key da MundiPay, o bot avisa mas não trava
-if (!MUNDIPAY_API_KEY) {
-  console.warn("⚠️ MUNDIPAY_API_KEY não configurada — pagamentos desativados temporariamente.");
-}
-
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-// Packs (produtos)
+// produtos
 const PACKS = {
-  pack1: { title: "Pack Fotos + Vídeo 🔥", price_eur: 15 },
-  pack2: { title: "Assinatura VIP Mensal 💎", price_eur: 45 },
+  pack1: { title: "🔥 Pack Fotos + Vídeo", price_eur: 20 },
+  pack2: { title: "💥 Mensal Grupo VIP + Atualizações", price_eur: 45 },
+  pack3: { title: "💎 Vitalício + chat exclusivo comigo", price_eur: 80 },
 };
 
-// Armazena ordens temporariamente (ideal usar DB no futuro)
-const orders = {}; // orders[order_id] = { chat_id, package_id }
+// armazena invoiced temporariamente (em produção usar DB)
+const orders = {};
 
+// função utilitária
 async function sendTelegram(chat_id, text) {
-  try {
-    await axios.post(`${TELEGRAM_API}/sendMessage`, {
-      chat_id,
-      text,
-      parse_mode: "HTML",
-    });
-  } catch (err) {
-    console.error("Erro enviando mensagem:", err?.response?.data || err);
-  }
+  await axios.post(`${TELEGRAM_API}/sendMessage`, {
+    chat_id,
+    text,
+    parse_mode: "HTML",
+  });
 }
 
-/* ------------------------ TELEGRAM WEBHOOK ------------------------ */
+/* ----------------------------------------------------------
+   TELEGRAM MESSAGE HANDLER
+-----------------------------------------------------------*/
 app.post("/telegram_webhook", async (req, res) => {
-  const msg = req.body.message;
+  const body = req.body;
+
+  // callback dos botões inline (packs)
+  if (body.callback_query) {
+    const chat_id = body.callback_query.message.chat.id;
+    const pack = body.callback_query.data;
+
+    if (PACKS[pack]) {
+      await sendTelegram(
+        chat_id,
+        "Ótimo amor 😘\nVou gerar o link de pagamento agora ❤️"
+      );
+
+      // dispara automaticamente o fluxo /buy
+      await sendTelegram(chat_id, `/buy ${pack}`);
+    }
+    return res.sendStatus(200);
+  }
+
+  const msg = body.message;
   if (!msg) return res.sendStatus(200);
 
   const chat_id = msg.chat.id;
   const text = (msg.text || "").trim();
 
+  /* /start → Botão “SIM 18+” */
   if (text === "/start") {
-    await sendTelegram(
+    await axios.post(`${TELEGRAM_API}/sendMessage`, {
       chat_id,
-      "🔥 Confirma que você tem 18+?\n\n<b>Responda: SIM</b>"
-    );
-    return res.sendStatus(200);
-  }
-
-  if (text.toUpperCase() === "SIM") {
-    await sendTelegram(
-      chat_id,
-      "✅ Perfeito.\nDigite <b>/packs</b> para ver os conteúdos disponíveis."
-    );
-    return res.sendStatus(200);
-  }
-
-  if (text === "/packs") {
-    let list = "🔥 <b>Conteúdos disponíveis:</b>\n\n";
-    Object.keys(PACKS).forEach((key) => {
-      list += `/${key} — ${PACKS[key].title} — €${PACKS[key].price_eur}\n`;
+      text: "🔥 Oi amor, antes de continuar...\nVocê tem +18?",
+      reply_markup: {
+        keyboard: [[{ text: "✅ Sim, tenho 18+" }]],
+        resize_keyboard: true,
+        one_time_keyboard: true,
+      },
     });
-    list += `\nPara comprar, envie: <b>/buy pack1</b>`;
-    await sendTelegram(chat_id, list);
     return res.sendStatus(200);
   }
 
-  if (text.startsWith("/buy")) {
-    const parts = text.split(" ");
-    const package_id = parts[1] || "pack1";
-    const pkg = PACKS[package_id];
+  /* Quando clica no botão 18+ */
+  if (text === "✅ Sim, tenho 18+") {
+    await axios.post(`${TELEGRAM_API}/sendMessage`, {
+      chat_id,
+      text:
+        "Perfeito meu anjo 😏\n" +
+        "Vou te apresentar meus serviços agora... vê se não demora rsrs.\n\n" +
+        "Posso enviar os valores?",
+      reply_markup: {
+        keyboard: [[{ text: "💸 Sim, quero os valores" }]],
+        resize_keyboard: true,
+      },
+    });
+    return res.sendStatus(200);
+  }
 
-    if (!pkg) {
+  /* Quando clica “Sim, quero os valores” → botões de packs */
+  if (text === "💸 Sim, quero os valores") {
+    await axios.post(`${TELEGRAM_API}/sendMessage`, {
+      chat_id,
+      text: "Esses são meus packs disponíveis 👇",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🔥 Pack Fotos + Vídeo — 20€", callback_data: "pack1" }],
+          [{ text: "💥 Mensal Grupo VIP + Atualizações — 45€", callback_data: "pack2" }],
+          [{ text: "💎 Vitalício + Chat exclusivo comigo — 80€", callback_data: "pack3" }],
+        ],
+      },
+    });
+    return res.sendStatus(200);
+  }
+
+  /* ----------------------------------------------------------
+    /buy PACK — só executa se Mundipay tiver configurada
+  -----------------------------------------------------------*/
+  if (text.startsWith("/buy")) {
+    const pack_id = text.split(" ")[1];
+
+    if (!PACKS[pack_id]) {
       await sendTelegram(chat_id, "❌ Pacote inválido.");
       return res.sendStatus(200);
     }
 
-    // SE A MUNDIPAY NÃO ESTIVER CONFIGURADA:
     if (!MUNDIPAY_API_KEY) {
       await sendTelegram(
         chat_id,
@@ -106,12 +137,11 @@ app.post("/telegram_webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Se quiser ativar depois, o código de pagamento já fica pronto aqui ↓↓↓
+    // Mundipay integrada
     try {
-      const order_id = `${chat_id}_${package_id}_${Date.now()}`;
-
+      const order_id = `${chat_id}_${pack_id}_${Date.now()}`;
       const payload = {
-        amount: pkg.price_eur,
+        amount: PACKS[pack_id].price_eur,
         currency: "EUR",
         paymentMethod: "crypto",
         metadata: { order_id },
@@ -128,55 +158,53 @@ app.post("/telegram_webhook", async (req, res) => {
       );
 
       const paymentUrl = resp?.data?.data?.paymentUrl;
-      orders[order_id] = { chat_id, package_id };
+      orders[order_id] = { chat_id, pack_id };
 
       await sendTelegram(chat_id, `✅ Pedido gerado!\n\n➡️ <b>Pague aqui:</b>\n${paymentUrl}`);
     } catch (err) {
-      console.error("Erro MundiPay:", err?.response?.data || err);
+      console.error("Erro Mundipay:", err?.response?.data || err);
       await sendTelegram(chat_id, "❌ Erro ao gerar pagamento.");
     }
 
     return res.sendStatus(200);
   }
 
-  return res.sendStatus(200);
+  res.sendStatus(200);
 });
 
-/* ------------------------ WEBHOOK MUNDIPAY (opcional) ------------------------ */
+/* ----------------------------------------------------------
+   MUNDIPAY WEBHOOK
+-----------------------------------------------------------*/
 app.post("/mundipay_webhook", async (req, res) => {
-  if (!MUNDIPAY_API_KEY) return res.json({ ok: true }); // ignora enquanto não configurado
+  if (!MUNDIPAY_API_KEY) return res.json({ ok: true });
 
-  const body = req.body;
+  const rawBody = JSON.stringify(req.body);
+  const sig = req.headers["x-signature"];
 
-  if (MUNDIPAY_WEBHOOK_SECRET && req.headers["x-signature"]) {
+  if (MUNDIPAY_WEBHOOK_SECRET && sig) {
     const calc = crypto
       .createHmac("sha256", MUNDIPAY_WEBHOOK_SECRET)
-      .update(JSON.stringify(body))
+      .update(rawBody)
       .digest("hex");
 
-    if (calc !== req.headers["x-signature"]) {
-      return res.sendStatus(403);
-    }
+    if (calc !== sig) return res.sendStatus(403);
   }
 
-  const order_id = body?.metadata?.order_id;
-  const status = body?.status;
+  const order_id = req.body?.metadata?.order_id;
+  const status = req.body?.status;
 
-  if (!order_id) return res.json({ ok: true });
-
-  const info = orders[order_id];
-
-  if (status === "paid" && info?.chat_id) {
+  if (status === "paid" && orders[order_id]) {
+    const { chat_id, pack_id } = orders[order_id];
     await sendTelegram(
-      info.chat_id,
-      `✅ Pagamento confirmado!\n\n➡️ Acesse:\n${CHANNEL_INVITE_LINK}`
+      chat_id,
+      `✅ Pagamento confirmado!\n\nPack: <b>${PACKS[pack_id].title}</b>\n\n➡️ Acesse:\n${CHANNEL_INVITE_LINK}`
     );
   }
 
-  return res.json({ ok: true });
+  res.json({ ok: true });
 });
 
-/* ------------------------ HEALTHCHECK ------------------------ */
+/* healthcheck */
 app.get("/", (req, res) => res.send("BOT ONLINE ✅"));
 
 app.listen(process.env.PORT || 3000, () =>
