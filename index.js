@@ -13,55 +13,52 @@ if (!BOT_TOKEN || !BASE_URL) {
   throw new Error("BOT_TOKEN ou BASE_URL ausentes");
 }
 
-// timeout para evitar travamento
 axios.defaults.timeout = 8000;
 
 // -----------------------------
-// FOLLOW UP AUTOMÁTICO (MEMÓRIA)
+// LEADS / FOLLOW UP
 // -----------------------------
-const leads = {}; // { chat_id: timestamp }
+const leads = {}; // chat_id: { lastInteraction }
 
-// função de follow-up
-async function followUp(chat_id, time) {
-  try {
-    const message =
-      time === 5
-        ? "👀 Ainda aí? Se quiser, posso te mostrar meus conteúdos disponíveis."
-        : time === 15
-        ? "🔥 Só passando pra lembrar: ainda tenho vagas abertas."
-        : "⏳ Última mensagem: se quiser continuar, é só me chamar.";
+// follow up messages
+async function followUp(chat_id, stage) {
+  const messages = {
+    5: "👀 Ainda aí? Se quiser, posso te mostrar meus conteúdos novamente…",
+    15: "🔥 Eu ainda estou aqui… pronta pra você 😈",
+    60: "⏳ Só vou te avisar porque sou boazinha… as vagas estão acabando."
+  };
 
-    await sendMessage(chat_id, message);
-  } catch (err) {
-    console.error(err);
-  }
+  return sendButtonsFollow(chat_id, messages[stage]);
 }
 
-// cron de remarketing
+// Interval do remarketing
 setInterval(() => {
   const now = Date.now();
-  for (const chat_id in leads) {
-    const elapsed = (now - leads[chat_id]) / 1000; // segundos
+  Object.keys(leads).forEach(chat_id => {
+    const lead = leads[chat_id];
+    const elapsed = (now - lead.lastInteraction) / 1000;
 
-    if (elapsed >= 3600) {
-      followUp(chat_id, 60);
-      delete leads[chat_id];
-    } else if (elapsed >= 900 && !leads[chat_id + "_15"]) {
-      followUp(chat_id, 15);
-      leads[chat_id + "_15"] = true;
-    } else if (elapsed >= 300 && !leads[chat_id + "_5"]) {
+    if (!lead.sent5 && elapsed >= 300) {
+      lead.sent5 = true;
       followUp(chat_id, 5);
-      leads[chat_id + "_5"] = true;
     }
-  }
-}, 5000); // roda a cada 5s
+
+    if (!lead.sent15 && elapsed >= 900) {
+      lead.sent15 = true;
+      followUp(chat_id, 15);
+    }
+
+    if (!lead.sent60 && elapsed >= 3600) {
+      delete leads[chat_id];
+      followUp(chat_id, 60);
+    }
+  });
+}, 5000);
 
 // -----------------------------
-// HEALTHCHECK - Render usa isso
+// HEALTH CHECK PARA A RENDER
 // -----------------------------
-app.get("/health", (req, res) => {
-  res.status(200).send("OK ✅");
-});
+app.get("/health", (req, res) => res.status(200).send("OK ✅"));
 
 // -----------------------------
 // WEBHOOK AUTOMÁTICO
@@ -72,71 +69,101 @@ async function setupWebhook() {
     await axios.get(url);
     console.log("✅ Webhook configurado");
   } catch (err) {
-    console.log("❌ erro webhook:", err.message);
+    console.log("❌ Erro webhook:", err.message);
   }
 }
 
 // -----------------------------
-// RECEBENDO MENSAGENS
+// RECEBENDO MENSAGENS DO TELEGRAM
 // -----------------------------
 app.post("/telegram_webhook", async (req, res) => {
   res.sendStatus(200);
 
-  try {
-    const msg = req.body.message;
-    if (!msg) return;
+  const msg = req.body.message;
+  if (!msg) return;
 
-    const chat_id = msg.chat.id;
-    const text = msg.text?.toLowerCase() || "";
+  const chat_id = msg.chat.id;
+  const text = msg.text?.toLowerCase() || "";
 
-    // marca para follow up
-    leads[chat_id] = Date.now();
+  // registra interação p/ remarketing
+  leads[chat_id] = leads[chat_id] || {};
+  leads[chat_id].lastInteraction = Date.now();
 
-    if (text === "/start") {
-      return sendButtons(chat_id, "🔥 Antes de continuar, você tem +18?");
-    }
+  if (text === "/start") {
+    return sendAgeButton(chat_id);
+  }
 
-    if (text.includes("✅")) {
-      return sendPackOptions(chat_id);
-    }
+  // ETAPA 2 — confirmação de maior de idade
+  if (text.includes("✅")) {
+    return sendIntro(chat_id);
+  }
 
-    if (text.includes("sim")) {
-      return sendPackOptions(chat_id);
-    }
+  // ETAPA 3 — quer ver mais
+  if (text.includes("quero ver mais")) {
+    return sendPackOptions(chat_id);
+  }
 
-  } catch (err) {
-    console.error("Erro no webhook:", err);
+  // follow-up "ver valores novamente"
+  if (text.includes("ver valores")) {
+    return sendPackOptions(chat_id);
   }
 });
 
 // -----------------------------
 // FUNÇÕES DE MENSAGEM
 // -----------------------------
-async function sendButtons(chat_id, text) {
+async function sendAgeButton(chat_id) {
   return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     chat_id,
-    text,
+    text: "🔥 Oi amor, antes de continuar…\nVocê tem **18+**?",
     reply_markup: {
-      keyboard: [[{ text: "✅ Sim, tenho 18+" }], [{ text: "❌ Não" }]],
+      keyboard: [[{ text: "✅ Sim, tenho 18+" }]],
+      resize_keyboard: true,
+      one_time_keyboard: true
+    }
+  });
+}
+
+async function sendIntro(chat_id) {
+  return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    chat_id,
+    text:
+      "Perfeito 😏\n\n" +
+      "Meu nome é *Ana*, eu sou **atrevida**, curiosa… e gosto de provocar.\n" +
+      "Eu não fico mandando fotinha boba. Eu gosto de **causar desejo**.\n\n" +
+      "Quer que eu te mostre o que eu faço no privado? 😈",
+    reply_markup: {
+      keyboard: [[{ text: "🔥 Quero ver mais 😈" }]],
       resize_keyboard: true,
       one_time_keyboard: true,
-    },
+    }
   });
 }
 
 async function sendPackOptions(chat_id) {
   return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     chat_id,
-    text: "Perfeito 😏 Agora escolha uma opção:",
+    text: "Agora escolhe uma opção, amor 😈",
     reply_markup: {
       keyboard: [
         [{ text: "🔥 Pack Fotos + Vídeo (20€)" }],
         [{ text: "💥 Grupo VIP Mensal (45€)" }],
-        [{ text: "💎 Vitalício + Chat exclusivo (80€)" }],
+        [{ text: "💎 Vitalício + Chat exclusivo (80€)" }]
       ],
+      resize_keyboard: true
+    }
+  });
+}
+
+async function sendButtonsFollow(chat_id, text) {
+  return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    chat_id,
+    text,
+    reply_markup: {
+      keyboard: [[{ text: "👀 Ver valores novamente" }]],
       resize_keyboard: true,
       one_time_keyboard: false,
-    },
+    }
   });
 }
 
