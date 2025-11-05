@@ -1,12 +1,13 @@
-// index.js
 const express = require("express");
 const axios = require("axios");
 
 const app = express();
 app.use(express.json({ limit: "200kb" }));
 
+// ENV VARS
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const BASE_URL = process.env.BASE_URL;
+const MEDIA_FILE = process.env.MEDIA_FILE; // FOTO OU VÍDEO PADRÃO
 
 if (!BOT_TOKEN || !BASE_URL) {
   console.error("❌ BOT_TOKEN ou BASE_URL não configurados.");
@@ -16,167 +17,144 @@ if (!BOT_TOKEN || !BASE_URL) {
 axios.defaults.timeout = 8000;
 
 // -----------------------------
-// LEADS / FOLLOW UP
+// LEADS PARA REMARKETING (só após ver valores)
 // -----------------------------
-const leads = {}; // chat_id: { lastInteraction }
+const remarketing = {}; // chat_id: timestamps
 
-// follow up messages
 async function followUp(chat_id, stage) {
   const messages = {
-    5: "👀 Ainda aí? Se quiser, posso te mostrar meus conteúdos novamente…",
-    15: "🔥 Eu ainda estou aqui… pronta pra você 😈",
-    60: "⏳ Só vou te avisar porque sou boazinha… as vagas estão acabando."
+    1: "👀 Ainda aí? Posso te mostrar os valores novamente.",
+    2: "🔥 Continuo aqui... pronta pra você 😈",
+    3: "⏳ Última chamada... se quiser continuar, clique abaixo 👇"
   };
 
-  return sendButtonsFollow(chat_id, messages[stage]);
+  await sendMediaWithButtons(chat_id, MEDIA_FILE, messages[stage], followMenu());
 }
 
-// Interval do remarketing
+// dispara remarketing
 setInterval(() => {
   const now = Date.now();
-  Object.keys(leads).forEach(chat_id => {
-    const lead = leads[chat_id];
-    const elapsed = (now - lead.lastInteraction) / 1000;
+  Object.keys(remarketing).forEach(chat_id => {
+    const data = remarketing[chat_id];
+    const elapsed = (now - data.lastInteraction) / 1000;
 
-    if (!lead.sent5 && elapsed >= 300) {
-      lead.sent5 = true;
-      followUp(chat_id, 5);
+    if (!data.sent5 && elapsed >= 300) {
+      data.sent5 = true;
+      followUp(chat_id, 1);
     }
 
-    if (!lead.sent15 && elapsed >= 900) {
-      lead.sent15 = true;
-      followUp(chat_id, 15);
+    if (!data.sent15 && elapsed >= 900) {
+      data.sent15 = true;
+      followUp(chat_id, 2);
     }
 
-    if (!lead.sent60 && elapsed >= 3600) {
-      delete leads[chat_id];
-      followUp(chat_id, 60);
+    if (!data.sent60 && elapsed >= 3600) {
+      delete remarketing[chat_id];
+      followUp(chat_id, 3);
     }
   });
-}, 5000);
+}, 3000);
 
 // -----------------------------
-// HEALTH CHECK PARA A RENDER
+// FUNÇÕES DE ENVIO (sempre com mídia antes da mensagem)
 // -----------------------------
-app.get("/health", (req, res) => res.status(200).send("OK ✅"));
+async function sendMediaWithButtons(chat_id, media, caption, menu) {
+  // detecta se é vídeo ou imagem pela extensão / tipo
+  const isVideo = media.endsWith(".mp4") || media.includes("BAAC") || media.includes("video");
 
-// -----------------------------
-// WEBHOOK AUTOMÁTICO
-// -----------------------------
-async function setupWebhook() {
-  try {
-    const url = `https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=${BASE_URL}/telegram_webhook`;
-    await axios.get(url);
-    console.log("✅ Webhook configurado");
-  } catch (err) {
-    console.log("❌ Erro webhook:", err.message);
-  }
+  const endpoint = isVideo ? "sendVideo" : "sendPhoto";
+
+  return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/${endpoint}`, {
+    chat_id,
+    [isVideo ? "video" : "photo"]: media,
+    caption,
+    parse_mode: "Markdown",
+    reply_markup: menu
+  });
+}
+
+// MENU FIXO
+function mainMenu() {
+  return {
+    keyboard: [
+      [{ text: "🔥 Conteúdos" }, { text: "💰 Valores" }],
+      [{ text: "🛠 Suporte" }, { text: "❤️ Sobre mim" }]
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: false
+  };
+}
+
+// MENU FOLLOW (remarketing)
+function followMenu() {
+  return {
+    keyboard: [[{ text: "💰 Ver valores novamente" }]],
+    resize_keyboard: true,
+    one_time_keyboard: false
+  };
 }
 
 // -----------------------------
-// RECEBENDO MENSAGENS DO TELEGRAM
+// FUNIL DE MENSAGENS
+// -----------------------------
+async function sendStart(chat_id) {
+  return sendMediaWithButtons(
+    chat_id,
+    MEDIA_FILE,
+    "🌸 Oii... que bom te ver aqui 😏\nClique em */start* para liberar o acesso.",
+    mainMenu()
+  );
+}
+
+async function sendSobre(chat_id) {
+  return sendMediaWithButtons(
+    chat_id,
+    MEDIA_FILE,
+    "Eu sou a Ana 😇\nProvocante, divertida e curiosa... você vai gostar 😏",
+    mainMenu()
+  );
+}
+
+async function sendValores(chat_id) {
+  remarketing[chat_id] = { lastInteraction: Date.now() }; // só aqui entra no remarketing
+
+  return sendMediaWithButtons(
+    chat_id,
+    MEDIA_FILE,
+    "*💰 PLANOS DISPONÍVEIS*\n\n🔥 Conteúdo exclusivo\n🔒 Privado e sigiloso\n\nEscolha abaixo 👇",
+    mainMenu()
+  );
+}
+
+// -----------------------------
+// RECEBENDO MENSAGENS
 // -----------------------------
 app.post("/telegram_webhook", async (req, res) => {
   res.sendStatus(200);
 
   const msg = req.body.message;
   if (!msg) return;
-
   const chat_id = msg.chat.id;
   const text = msg.text?.toLowerCase() || "";
 
-  // registra interação p/ remarketing
-  leads[chat_id] = leads[chat_id] || {};
-  leads[chat_id].lastInteraction = Date.now();
-
-  if (text === "/start") {
-    return sendAgeButton(chat_id);
-  }
-
-  // ETAPA 2 — confirmação de maior de idade
-  if (text.includes("✅")) {
-    return sendIntro(chat_id);
-  }
-
-  // ETAPA 3 — quer ver mais
-  if (text.includes("quero ver mais")) {
-    return sendPackOptions(chat_id);
-  }
-
-  // follow-up "ver valores novamente"
-  if (text.includes("ver valores")) {
-    return sendPackOptions(chat_id);
-  }
+  if (text === "/start") return sendSobre(chat_id);
+  if (text.includes("conteúdo")) return sendSobre(chat_id);
+  if (text.includes("valores")) return sendValores(chat_id);
+  if (text.includes("suporte")) return sendMediaWithButtons(chat_id, MEDIA_FILE, "Me chame no suporte: @seuuser", mainMenu());
+  if (text.includes("sobre")) return sendSobre(chat_id);
 });
 
 // -----------------------------
-// FUNÇÕES DE MENSAGEM
+// HEALTHCHECK + WEBHOOK AUTO
 // -----------------------------
-async function sendAgeButton(chat_id) {
-  return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    chat_id,
-    text: "🔥 Oi amor, antes de continuar…\nVocê tem **18+**?",
-    reply_markup: {
-      keyboard: [[{ text: "✅ Sim, tenho 18+" }]],
-      resize_keyboard: true,
-      one_time_keyboard: true
-    }
-  });
+app.get("/health", (req, res) => res.status(200).send("OK ✅"));
+
+async function setupWebhook() {
+  await axios.get(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook?url=${BASE_URL}/telegram_webhook`);
 }
 
-async function sendIntro(chat_id) {
-  return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    chat_id,
-    text:
-      "Perfeito 😏\n\n" +
-      "Meu nome é *Ana*, eu sou **atrevida**, curiosa… e gosto de provocar.\n" +
-      "Eu não fico mandando fotinha boba. Eu gosto de **causar desejo**.\n\n" +
-      "Quer que eu te mostre o que eu faço no privado? 😈",
-    reply_markup: {
-      keyboard: [[{ text: "🔥 Quero ver mais 😈" }]],
-      resize_keyboard: true,
-      one_time_keyboard: true,
-    }
-  });
-}
-
-async function sendPackOptions(chat_id) {
-  return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    chat_id,
-    text: "Agora escolhe uma opção, amor 😈",
-    reply_markup: {
-      keyboard: [
-        [{ text: "🔥 Pack Fotos + Vídeo (20€)" }],
-        [{ text: "💥 Grupo VIP Mensal (45€)" }],
-        [{ text: "💎 Vitalício + Chat exclusivo (80€)" }]
-      ],
-      resize_keyboard: true
-    }
-  });
-}
-
-async function sendButtonsFollow(chat_id, text) {
-  return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    chat_id,
-    text,
-    reply_markup: {
-      keyboard: [[{ text: "👀 Ver valores novamente" }]],
-      resize_keyboard: true,
-      one_time_keyboard: false,
-    }
-  });
-}
-
-async function sendMessage(chat_id, text) {
-  return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    chat_id,
-    text,
-  });
-}
-
-// -----------------------------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, async () => {
-  console.log("🚀 Bot rodando!");
+  console.log("✅ Bot rodando e webhook configurado!");
   await setupWebhook();
 });
